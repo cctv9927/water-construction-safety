@@ -1,0 +1,285 @@
+# ============================================================
+# 水利工地质量安全监管系统 - 一键部署
+# ============================================================
+# 使用方法:
+#   1. cp .env.example .env
+#   2. 修改 .env 中的配置（ThingsBoard Token、EasyDarwin URL等）
+#   3. docker-compose up -d
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ───────────────────────────────────────────────
+  # ThingsBoard IoT 平台
+  # ───────────────────────────────────────────────
+  thingsboard:
+    image: thingsboard/tb-postgres:latest
+    container_name: water-safety-thingsboard
+    restart: unless-stopped
+    ports:
+      - "9090:9090"       # Web UI
+      - "1883:1883"       # MQTT Broker
+      - "5683:5683"       # CoAP
+    environment:
+      DATABASE_TYPE: postgres
+      SPRING_DATASOURCE_URL: jdbc:postgresql://thingsboard-db:5432/thingsboard
+      SPRING_DATASOURCE_USERNAME: thingsboard
+      SPRING_DATASOURCE_PASSWORD: ${TB_DB_PASSWORD:-thingsboard}
+      TB_QUEUE_TYPE: in-memory
+    depends_on:
+      thingsboard-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9090/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - water-safety-net
+
+  thingsboard-db:
+    image: postgres:15-alpine
+    container_name: water-safety-tb-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: thingsboard
+      POSTGRES_USER: thingsboard
+      POSTGRES_PASSWORD: ${TB_DB_PASSWORD:-thingsboard}
+    volumes:
+      - thingsboard-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thingsboard -d thingsboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # EasyDarwin 流媒体服务器（RTSP 拉流 + FLV 推流）
+  # ───────────────────────────────────────────────
+  easy-darwin:
+    build:
+      context: ./easy-darwin
+      dockerfile: Dockerfile
+    container_name: water-safety-easy-darwin
+    restart: unless-stopped
+    ports:
+      - "10000:10000"     # HTTP 管理端口
+      - "1935:1935"       # RTMP 推流端口
+      - "8080:8080"       # HTTP-FLV 拉流端口
+    volumes:
+      - ./easy-darwin/config.toml:/app/config.toml:ro
+      - easy-darwin-data:/app/data
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # AI Vision 图像识别服务（YOLOv8 ONNX）
+  # ───────────────────────────────────────────────
+  ai-vision:
+    build:
+      context: ./ai-vision
+      dockerfile: Dockerfile
+    container_name: water-safety-ai-vision
+    restart: unless-stopped
+    ports:
+      - "8082:8082"       # HTTP API
+    environment:
+      MODEL_PATH: /app/models/yolov8n.onnx
+      DEFAULT_CONFIDENCE: "0.5"
+      MAX_DETECTIONS: "100"
+      LOG_LEVEL: INFO
+      COORDINATOR_URL: http://ai-coordinator:8084
+    volumes:
+      - ./ai-vision/models:/app/models:ro
+      - ai-vision-data:/app/cache
+    networks:
+      - water-safety-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ───────────────────────────────────────────────
+  # AI Voice 语音处理（Whisper + Edge TTS）
+  # ───────────────────────────────────────────────
+  ai-voice:
+    build:
+      context: ./ai-voice
+      dockerfile: Dockerfile
+    container_name: water-safety-ai-voice
+    restart: unless-stopped
+    ports:
+      - "8083:8083"       # HTTP API
+    environment:
+      LOG_LEVEL: INFO
+      COORDINATOR_URL: http://ai-coordinator:8084
+    volumes:
+      - ai-voice-data:/app/cache
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # AI Coordinator 多智能体调度中心
+  # ───────────────────────────────────────────────
+  ai-coordinator:
+    build:
+      context: ./ai-coordinator
+      dockerfile: Dockerfile
+    container_name: water-safety-ai-coordinator
+    restart: unless-stopped
+    ports:
+      - "8084:8084"       # HTTP API
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
+      LOG_LEVEL: INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # Sensor Collector 传感器采集服务
+  # ───────────────────────────────────────────────
+  sensor-collector:
+    build:
+      context: ./sensor-collector
+      dockerfile: Dockerfile
+    container_name: water-safety-sensor-collector
+    restart: unless-stopped
+    ports:
+      - "8085:8085"       # 管理端口
+    environment:
+      TB_TOKEN: ${TB_SENSOR_TOKEN:-YOUR_THINGSBOARD_TOKEN}
+      COORDINATOR_URL: http://ai-coordinator:8084
+      LOG_LEVEL: INFO
+    volumes:
+      - ./sensor-collector/config.yaml:/app/config.yaml:ro
+    depends_on:
+      - thingsboard
+      - ai-coordinator
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # Video Streamer 视频流处理服务
+  # ───────────────────────────────────────────────
+  video-streamer:
+    build:
+      context: ./video-streamer
+      dockerfile: Dockerfile
+    container_name: water-safety-video-streamer
+    restart: unless-stopped
+    ports:
+      - "8086:8081"       # HTTP API
+    environment:
+      AI_VISION_URL: http://ai-vision:8082
+      COORDINATOR_URL: http://ai-coordinator:8084
+      LOG_LEVEL: INFO
+    volumes:
+      - ./video-streamer/config.yaml:/app/config.yaml:ro
+      - video-streamer-frames:/app/frames
+    depends_on:
+      - ai-vision
+      - ai-coordinator
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # Backend API 网关
+  # ───────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: water-safety-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"       # FastAPI
+    environment:
+      DATABASE_URL: postgresql://thingsboard:thingsboard@thingsboard-db:5432/water_safety
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      COORDINATOR_URL: http://ai-coordinator:8084
+      THINGSBOARD_URL: http://thingsboard:9090
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "1440"
+      LOG_LEVEL: INFO
+    depends_on:
+      thingsboard-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # Redis（AI 模块消息总线）
+  # ───────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: water-safety-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - water-safety-net
+
+  # ───────────────────────────────────────────────
+  # Nginx 反向代理（统一入口）
+  # ───────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: water-safety-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      - backend
+      - ai-coordinator
+      - ai-vision
+      - ai-voice
+    networks:
+      - water-safety-net
+
+# ============================================================
+# 网络
+# ============================================================
+networks:
+  water-safety-net:
+    driver: bridge
+
+# ============================================================
+# 持久化卷
+# ============================================================
+volumes:
+  thingsboard-db-data:
+  easy-darwin-data:
+  ai-vision-data:
+  ai-voice-data:
+  video-streamer-frames:
+  redis-data:
+  nginx-logs:

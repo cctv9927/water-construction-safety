@@ -1,24 +1,41 @@
+# ============================================================
+# 传感器采集模块配置
+# 对接 ThingsBoard IoT 平台
+# ============================================================
+
+# ThingsBoard MQTT 连接配置
 mqtt:
-  broker: "mqtt://localhost:1883"
+  # ThingsBoard MQTT Broker 地址（Docker Compose 服务名）
+  broker: "tcp://thingsboard:1883"
   client_id: "sensor-collector-01"
+  # ThingsBoard 设备访问令牌（在 ThingsBoard 设备详情页获取）
+  username: "YOUR_THINGSBOARD_TOKEN"
+  password: ""
+  # 订阅的 Topic 模式（ThingsBoard 默认格式）
+  # 格式: v1/devices/me/attributes  → 设备属性
+  # 格式: v1/devices/me/rpc/request/+ → RPC 请求
+  # 格式: device/+/sensor/+ → 自定义传感器数据
   topics:
-    - "site/+/temperature"
-    - "site/+/pressure"
-    - "site/+/vibration"
-    - "site/+/displacement"
-    - "site/+/flow"
-    - "site/+/wind_speed"
-    - "site/+/rainfall"
+    - "v1/devices/me/attributes"
+    - "v1/devices/me/rpc/request/+"
+    - "device/+/temperature"
+    - "device/+/pressure"
+    - "device/+/vibration"
+    - "device/+/displacement"
+    - "device/+/flow"
+    - "device/+/wind_speed"
+    - "device/+/rainfall"
   qos: 1
   keepalive: 60
   reconnect_delay: 5
 
+# ThingsBoard HTTP API（用于上报数据）
 iot_hub:
-  base_url: "http://localhost:8080/api/v1/iot"
+  base_url: "http://thingsboard:8080/api/v1"
   timeout: 10
   retry: 3
 
 collector:
-  report_interval: 5
-  batch_size: 100
+  report_interval: 5      # 批量上报间隔（秒）
+  batch_size: 100         # 达到此数量立即触发上报
   log_level: "INFO"

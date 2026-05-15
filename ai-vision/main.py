@@ -1,12 +1,14 @@
 """
 AI Vision Module - YOLOv8 ONNX 推理服务
 FastAPI 图像识别服务，端口 8082
+支持静态图片检测 + RTSP 视频流实时检测
 """
 import os
 import time
 import base64
 import logging
 import json
+import asyncio
 from pathlib import Path
 from typing import Optional, List
 
@@ -16,14 +18,18 @@ import httpx
 from PIL import Image
 from io import BytesIO
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel
 import uvicorn
 
 from model import YOLOv8ONNX
-from schemas import DetectRequest, DetectResponse, BBox, Detection, ModelInfo
+from schemas import (
+    DetectRequest, DetectResponse, ModelInfo,
+    RTSPCameraConfig, RTSPDetectionResult,
+    RTSPBatchAddRequest, RTSPStreamEventRequest, RTSPSourcesResponse,
+)
+from rtsp_stream import RTSPStreamManager, StreamConfig, DetectionResult
 
 # ─── 日志配置 ───────────────────────────────────────────
 logging.basicConfig(
@@ -36,17 +42,18 @@ logger = logging.getLogger("ai-vision")
 MODEL_PATH = os.getenv("MODEL_PATH", "models/yolov8n.onnx")
 DEFAULT_CONFIDENCE = float(os.getenv("DEFAULT_CONFIDENCE", "0.5"))
 MAX_DETECTIONS = int(os.getenv("MAX_DETECTIONS", "100"))
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8084")
 
-# ─── 全局模型实例 ────────────────────────────────────────
+# ─── 全局模型和流管理器 ──────────────────────────────────
 model: Optional[YOLOv8ONNX] = None
+stream_manager: Optional[RTSPStreamManager] = None
+
 
 # ─── FastAPI 应用 ────────────────────────────────────────
 app = FastAPI(
     title="Water-Safety AI Vision",
-    version="1.0.0",
-    description="水利建设工地图像识别服务 - YOLOv8 ONNX 推理",
+    version="1.1.0",
+    description="水利建设工地图像识别服务 - YOLOv8 ONNX 推理 + RTSP 视频流检测",
 )
 
 app.add_middleware(
@@ -60,24 +67,26 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    global model
+    global model, stream_manager
     logger.info("正在加载 YOLOv8 ONNX 模型...")
     model = YOLOv8ONNX(
         model_path=MODEL_PATH,
         conf_threshold=DEFAULT_CONFIDENCE,
         max_detections=MAX_DETECTIONS,
     )
+    stream_manager = RTSPStreamManager(model)
     logger.info(f"模型加载完成，类别数: {model.num_classes}")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    logger.info("AI Vision 服务关闭")
+    logger.info("AI Vision 服务关闭，停止所有 RTSP 流...")
+    if stream_manager:
+        stream_manager.stop_all()
 
 
 # ─── 辅助函数 ────────────────────────────────────────────
 async def fetch_image(url: str) -> np.ndarray:
-    """从 URL 下载图片"""
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -86,24 +95,40 @@ async def fetch_image(url: str) -> np.ndarray:
 
 
 def decode_base64_image(b64_str: str) -> np.ndarray:
-    """Base64 解码为图片"""
     data = base64.b64decode(b64_str)
     img = Image.open(BytesIO(data)).convert("RGB")
     return np.array(img)
 
 
-# ─── API 路由 ────────────────────────────────────────────
+async def _report_to_coordinator(detection_result: DetectionResult):
+    """将检测结果上报给 AI Coordinator"""
+    if not detection_result.detections:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{COORDINATOR_URL}/event/vision",
+                json={
+                    "camera_id": detection_result.camera_id,
+                    "detection_type": detection_result.detections[0]["class_name"],
+                    "confidence": detection_result.detections[0]["confidence"],
+                    "location": detection_result.camera_id,
+                }
+            )
+            logger.debug(f"已上报给 Coordinator: {detection_result.camera_id}")
+    except Exception as e:
+        logger.warning(f"上报 Coordinator 失败: {e}")
+
+
+# ─── 静态图片检测 API ────────────────────────────────────
+
 @app.post("/detect", response_model=DetectResponse)
 async def detect(request: DetectRequest):
-    """
-    图片目标检测
-    支持 image_url（优先）或 image_base64
-    """
+    """图片目标检测（静态图片 URL 或 Base64）"""
     global model
     if model is None:
         raise HTTPException(status_code=503, detail="模型未加载")
 
-    # 解析图片
     try:
         if request.image:
             img = await fetch_image(request.image)
@@ -117,7 +142,6 @@ async def detect(request: DetectRequest):
         logger.error(f"图片加载失败: {e}")
         raise HTTPException(status_code=400, detail=f"图片加载失败: {str(e)}")
 
-    # 推理
     start = time.perf_counter()
     try:
         results = model.detect(
@@ -131,24 +155,22 @@ async def detect(request: DetectRequest):
 
     elapsed_ms = (time.perf_counter() - start) * 1000
 
-    # 序列化结果
-    detections_out: List[Detection] = []
-    for r in results:
-        detections_out.append(Detection(
+    from schemas import Detection, BBox
+    detections_out = [
+        Detection(
             class_id=r["class_id"],
             class_name=r["class_name"],
             confidence=round(float(r["confidence"]), 4),
             bbox=BBox(
-                x1=int(r["bbox"][0]),
-                y1=int(r["bbox"][1]),
-                x2=int(r["bbox"][2]),
-                y2=int(r["bbox"][3]),
+                x1=int(r["bbox"][0]), y1=int(r["bbox"][1]),
+                x2=int(r["bbox"][2]), y2=int(r["bbox"][3]),
             ),
-        ))
+        )
+        for r in results
+    ]
 
     return DetectResponse(
-        code=0,
-        message="success",
+        code=0, message="success",
         data={
             "width": int(img.shape[1]),
             "height": int(img.shape[0]),
@@ -159,9 +181,115 @@ async def detect(request: DetectRequest):
     )
 
 
+# ─── RTSP 视频流管理 API ─────────────────────────────────
+
+@app.post("/rtsp/add")
+async def rtsp_add_camera(request: RTSPCameraConfig):
+    """添加一路 RTSP 摄像头流"""
+    global stream_manager
+    if stream_manager is None:
+        raise HTTPException(status_code=503, detail="服务未初始化")
+
+    config = StreamConfig(
+        rtsp_url=request.rtsp_url,
+        name=request.camera_id,
+        interval_seconds=request.interval_seconds,
+        confidence=request.confidence,
+        max_detections=MAX_DETECTIONS,
+    )
+
+    stream_manager.add_stream(config)
+
+    # 立即启动
+    if request.enabled:
+        stream_manager.start_stream(request.camera_id)
+
+    return {"code": 0, "message": f"摄像头 {request.camera_id} 已添加", "running": request.enabled}
+
+
+@app.post("/rtsp/batch-add")
+async def rtsp_batch_add(request: RTSPBatchAddRequest):
+    """批量添加 RTSP 摄像头流"""
+    global stream_manager
+    if stream_manager is None:
+        raise HTTPException(status_code=503, detail="服务未初始化")
+
+    results = []
+    for cam in request.cameras:
+        config = StreamConfig(
+            rtsp_url=cam.rtsp_url,
+            name=cam.camera_id,
+            interval_seconds=cam.interval_seconds,
+            confidence=cam.confidence,
+            max_detections=MAX_DETECTIONS,
+        )
+        stream_manager.add_stream(config)
+        if cam.enabled:
+            stream_manager.start_stream(cam.camera_id)
+        results.append({"camera_id": cam.camera_id, "enabled": cam.enabled})
+
+    return {"code": 0, "message": f"已添加 {len(results)} 路摄像头", "cameras": results}
+
+
+@app.post("/rtsp/{camera_id}/start")
+async def rtsp_start(camera_id: str):
+    """启动指定摄像头"""
+    global stream_manager
+    if stream_manager is None or camera_id not in stream_manager.streams:
+        raise HTTPException(status_code=404, detail=f"摄像头不存在: {camera_id}")
+    stream_manager.start_stream(camera_id)
+    return {"code": 0, "message": f"{camera_id} 已启动"}
+
+
+@app.post("/rtsp/{camera_id}/stop")
+async def rtsp_stop(camera_id: str):
+    """停止指定摄像头"""
+    global stream_manager
+    if stream_manager is None or camera_id not in stream_manager.streams:
+        raise HTTPException(status_code=404, detail=f"摄像头不存在: {camera_id}")
+    stream_manager.stop_stream(camera_id)
+    return {"code": 0, "message": f"{camera_id} 已停止"}
+
+
+@app.get("/rtsp/sources", response_model=RTSPSourcesResponse)
+async def rtsp_sources():
+    """查看所有 RTSP 流状态"""
+    global stream_manager
+    if stream_manager is None:
+        return RTSPSourcesResponse(streams=[], total=0)
+    statuses = stream_manager.get_all_status()
+    return RTSPSourcesResponse(
+        streams=[{"camera_id": s["name"], "status": s["status"],
+                  "total_frames": s["total_frames"], "error_count": s["error_count"]}
+                 for s in statuses],
+        total=len(statuses),
+    )
+
+
+@app.delete("/rtsp/{camera_id}")
+async def rtsp_delete(camera_id: str):
+    """删除摄像头流"""
+    global stream_manager
+    if stream_manager is None or camera_id not in stream_manager.streams:
+        raise HTTPException(status_code=404, detail=f"摄像头不存在: {camera_id}")
+    stream_manager.remove_stream(camera_id)
+    return {"code": 0, "message": f"{camera_id} 已删除"}
+
+
+# ─── 健康检查和模型信息 ─────────────────────────────────
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model_loaded": model is not None}
+    global stream_manager
+    rtsp_count = len(stream_manager.streams) if stream_manager else 0
+    running = sum(1 for s in (stream_manager.get_all_status() if stream_manager else [])
+                  if s.get("running", False))
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "rtsp_total": rtsp_count,
+        "rtsp_running": running,
+    }
 
 
 @app.get("/model/info", response_model=ModelInfo)
@@ -178,13 +306,12 @@ async def model_info():
 
 # ─── 入口 ────────────────────────────────────────────────
 if __name__ == "__main__":
-    # 确保模型存在
     os.makedirs("models", exist_ok=True)
     if not Path(MODEL_PATH).exists():
         logger.warning(f"模型文件不存在: {MODEL_PATH}，将尝试自动下载...")
         try:
             from ultralytics import YOLO
-            yolo = YOLO("yolov8n.pt")
+            YOLO("yolov8n.pt")
             logger.info("YOLOv8n 模型下载完成")
         except Exception as e:
             logger.error(f"模型下载失败: {e}")

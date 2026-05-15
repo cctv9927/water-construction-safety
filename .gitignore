@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.env
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Models (large files, download at runtime)
+models/
+*.onnx
+*.pt
+*.pth
+
+# Captured frames
+frames/
+*.jpg
+*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+.env.local
+
+# Temporary
+tmp/
+temp/
+*.tmp

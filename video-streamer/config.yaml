@@ -1,0 +1,40 @@
+rtsp:
+  timeout: 30
+  retry_interval: 5
+  max_retries: 3
+  buffer_size: 1  # 低延迟
+
+frame_capture:
+  output_dir: /app/frames
+  jpeg_quality: 85
+  png_compress: 6
+  max_storage_days: 7
+
+diagnostics:
+  brightness_threshold: 20.0
+  occlusion_ratio: 0.8
+  check_interval: 5.0
+
+websocket:
+  host: "0.0.0.0"
+  port: 8081
+
+# 视频流来源配置
+streams:
+  # 格式: stream_id → RTSP URL
+  # 支持多路摄像头
+  []
+
+# EasyDarwin 流媒体服务器配置（可选）
+easy_darwin:
+  enabled: false
+  api_url: "http://localhost:8080"
+  stream_key_prefix: "water_safety_"
+
+# AI Vision 对接配置
+ai_vision:
+  enabled: true
+  api_url: "http://ai-vision:8082"
+  # 截帧后自动推送给 ai-vision 检测
+  auto_detect: true
+  detect_interval: 2.0  # 每隔几秒送一帧去检测
