@@ -744,3 +744,155 @@ spec:
 - **传输加密**: 全站HTTPS/TLS
 - **存储加密**: PostgreSQL TDE + MinIO SSE
 - **备份策略**: 每日增量 + 每周全量 + 跨区域复制
+
+---
+
+## 架构优化报告（2026-05-15）
+
+### 发现的问题
+
+#### A. 架构问题（5个）
+
+| ID | 问题描述 | 影响 | 位置 |
+|----|---------|------|------|
+| A1 | **多 Agent 协调架构过于简单**：ai-coordinator 只是简单的状态机 + 事件路由，缺乏真正的多 Agent 协作能力（决策 Agent、执行 Agent 未实现） | 无法实现复杂事件处理 | `ai-coordinator/main.py` |
+| A2 | **数据库初始化方式不当**：使用 `Base.metadata.create_all()` 在应用启动时创建表，不适合生产环境 | 生产部署风险、数据迁移困难 | `backend/app/main.py` |
+| A3 | **Kafka 架构未实现**：文档提到 Kafka，但代码库只有 Redis Stream | 消息处理能力受限 | 整体架构 |
+| A4 | **服务发现缺失**：硬编码服务地址如 `http://localhost:8081` | 部署灵活性差、服务编排困难 | `ai-coordinator/event_router.py` |
+| A5 | **模块边界不清晰**：各服务之间耦合度高，sensor-collector/collector 和 backend/app 职责有重叠 | 维护困难、扩展性差 | 整体代码 |
+
+#### B. 代码问题（7个）
+
+| ID | 问题描述 | 级别 | 位置 |
+|----|---------|------|------|
+| B1 | **拼写错误导致 WebSocket 断连失败**：`self.all_connections` 应为 `self.all_clients` | P0 | `backend/app/main.py:58` |
+| B2 | **CORS 配置过于宽松**：`allow_origins=["*"]` 允许所有来源，生产环境存在安全风险 | P0 | 多处 `CORSMiddleware` |
+| B3 | **JWT 密钥验证缺失**：`gateway/auth.py` 中未验证密钥长度和复杂度 | P1 | `gateway/auth.py` |
+| B4 | **传感器类型验证不足**：只有静态列表检查，未做运行时验证 | P1 | `sensor-collector/collector/validator.py` |
+| B5 | **Redis 连接未注入**：fusion_engine 使用全局变量而非依赖注入 | P1 | `ai-coordinator/main.py` |
+| B6 | **错误处理过于宽泛**：大量使用 `except Exception` 而非细分异常类型 | P1 | 多处 |
+| B7 | **状态机超时机制未实现**：`register_timeout` 方法有定义但未实际生效 | P1 | `ai-coordinator/state_machine.py` |
+
+#### C. 最佳实践问题（6个）
+
+| ID | 问题描述 | 建议 | 位置 |
+|----|---------|------|------|
+| C1 | **缺少单元测试和集成测试**：整个代码库没有测试文件 | 建立测试体系 | 整体 |
+| C2 | **未使用 Alembic 迁移**：依赖 `create_all()` 而非版本化迁移 | 改用 Alembic | `backend/app/main.py` |
+| C3 | **硬编码敏感配置**：JWT_SECRET 等写在代码中 | 使用环境变量或密钥管理服务 | `gateway/config.py` |
+| C4 | **重复代码**：多处重复的 `EventConverter` 逻辑 | 抽象为公共模块 | `ai-coordinator/event_router.py` |
+| C5 | **缺少 API 版本控制**：API 路由未使用版本化前缀 | 添加 `/api/v2/` 版本 | `backend/app/main.py` |
+| C6 | **日志不规范**：混合使用 print 和 logging，缺少结构化日志 | 统一使用 structlog | 整体 |
+
+#### D. 遗漏功能（5个）
+
+| ID | 功能描述 | 优先级 | 状态 |
+|----|---------|--------|------|
+| D1 | **工作流引擎**：数据库表已定义但引擎未实现 | P1 | 未实现 |
+| D2 | **RAG 专家系统**：API 端点存在但 LLM 集成未实现 | P1 | 框架存在 |
+| D3 | **权限控制系统**：role_permissions 表存在但 RBAC 未实现 | P1 | 未实现 |
+| D4 | **无人机集成**：只有 README，无实际代码 | P2 | 框架存在 |
+| D5 | **报表服务**：API 端点存在但统计逻辑未实现 | P2 | 框架存在 |
+
+---
+
+### 改进建议
+
+#### 1. 紧急修复（B1 拼写错误）
+
+```python
+# backend/app/main.py 第58行
+# 错误：self.all_connections.discard(conn)
+# 修正为：self.all_clients.discard(conn)
+```
+
+#### 2. 安全加固（B2、B3）
+
+```python
+# CORS 配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://app.example.com",
+        "https://*.feishu.cn"
+    ],  # 不再使用 *
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],  # 限制方法
+    allow_headers=["Authorization", "Content-Type"],  # 限制头
+)
+
+# JWT 密钥验证
+def _validate_secret_key(key: str) -> str:
+    if len(key) < 32:
+        raise ValueError("JWT_SECRET_KEY must be at least 32 characters")
+    return key
+```
+
+#### 3. 多 Agent 协调架构升级（A1）
+
+引入 LangChain/LangGraph 实现真正的多 Agent 协作：
+
+```python
+from langgraph.graph import StateGraph
+from langchain_core.messages import BaseMessage
+
+class CoordinatorState(TypedDict):
+    messages: List[BaseMessage]
+    current_alert: Alert
+    decision_result: Optional[Dict]
+    execution_result: Optional[Dict]
+
+# 构建 Agent 图
+workflow = StateGraph(CoordinatorState)
+workflow.add_node("orchestrator", orchestrator_node)
+workflow.add_node("decision", decision_agent_node)
+workflow.add_node("execution", execution_agent_node)
+workflow.add_edge("orchestrator", "decision")
+workflow.add_edge("decision", "execution")
+```
+
+#### 4. 数据库迁移规范化（C2）
+
+```bash
+# 使用 Alembic 替代 create_all
+alembic revision --autogenerate -m "Initial schema"
+alembic upgrade head
+```
+
+#### 5. 服务发现配置（A4）
+
+```yaml
+# docker-compose.yml
+services:
+  iot-hub:
+    environment:
+      - SERVICE_NAME=iot-hub
+      - SERVICE_URL=http://iot-hub:8000
+    labels:
+      - "com.docker.service.name=iot-hub"
+```
+
+---
+
+### 优先级排序
+
+#### P0（必须修复 - 安全/严重Bug）
+1. **B1**：修复 `all_connections` 拼写错误（WebSocket 断连功能失效）
+2. **B2**：限制 CORS origins，生产环境禁用 `*`
+3. **B3**：JWT 密钥最小长度验证
+
+#### P1（建议修复 - 功能缺陷）
+4. **A1**：升级多 Agent 协调架构，引入 LangGraph
+5. **A2**：改用 Alembic 数据库迁移
+6. **B5**：修复依赖注入问题
+7. **B7**：实现状态机超时机制
+8. **D1**：实现工作流引擎
+9. **D3**：实现 RBAC 权限控制
+
+#### P2（可选优化 - 长期改进）
+10. **A3**：引入 Kafka 消息队列
+11. **A4**：实现服务发现机制
+12. **C1**：建立测试体系
+13. **D2**：完善 RAG 专家系统
+14. **D4**：实现无人机集成
+15. **D5**：实现报表统计功能
