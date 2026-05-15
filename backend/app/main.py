@@ -72,7 +72,7 @@ class ConnectionManager:
             except Exception:
                 disconnected.append(connection)
         for conn in disconnected:
-            self.all_connections.discard(conn)
+            self.all_clients.discard(conn)
             if alert_id in self.active_connections:
                 self.active_connections[alert_id].discard(conn)
 

@@ -1,0 +1,11 @@
+# EasyDarwin 简化配置（仅用于本地开发）
+# 生产环境请参考官方文档配置真实 EasyDarwin
+
+[server]
+port = 8080
+rtmp_port = 1935
+api_port = 10000
+
+[stream]
+max_connections = 100
+timeout = 30

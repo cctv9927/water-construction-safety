@@ -3,8 +3,9 @@
 # ============================================================
 # 使用方法:
 #   1. cp .env.example .env
-#   2. 修改 .env 中的配置（ThingsBoard Token、EasyDarwin URL等）
+#   2. 修改 .env 中的配置
 #   3. docker-compose up -d
+#   4. docker-compose -f docker-compose.test.yml up
 # ============================================================
 
 version: "3.9"
@@ -58,7 +59,7 @@ services:
       - water-safety-net
 
   # ───────────────────────────────────────────────
-  # EasyDarwin 流媒体服务器（RTSP 拉流 + FLV 推流）
+  # EasyDarwin 流媒体服务器
   # ───────────────────────────────────────────────
   easy-darwin:
     build:
@@ -69,12 +70,17 @@ services:
     ports:
       - "10000:10000"     # HTTP 管理端口
       - "1935:1935"       # RTMP 推流端口
-      - "8080:8080"       # HTTP-FLV 拉流端口
+      - "8087:8080"       # HTTP-FLV 拉流端口
     volumes:
       - ./easy-darwin/config.toml:/app/config.toml:ro
       - easy-darwin-data:/app/data
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # AI Vision 图像识别服务（YOLOv8 ONNX）
@@ -105,6 +111,11 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # AI Voice 语音处理（Whisper + Edge TTS）
@@ -124,6 +135,11 @@ services:
       - ai-voice-data:/app/cache
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # AI Coordinator 多智能体调度中心
@@ -146,6 +162,11 @@ services:
         condition: service_healthy
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8084/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # Sensor Collector 传感器采集服务
@@ -169,6 +190,11 @@ services:
       - ai-coordinator
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # Video Streamer 视频流处理服务
@@ -180,7 +206,7 @@ services:
     container_name: water-safety-video-streamer
     restart: unless-stopped
     ports:
-      - "8086:8081"       # HTTP API
+      - "8086:8081"       # HTTP API (容器内8081)
     environment:
       AI_VISION_URL: http://ai-vision:8082
       COORDINATOR_URL: http://ai-coordinator:8084
@@ -193,6 +219,11 @@ services:
       - ai-coordinator
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # Backend API 网关
@@ -222,6 +253,11 @@ services:
         condition: service_healthy
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ───────────────────────────────────────────────
   # Redis（AI 模块消息总线）
@@ -264,6 +300,11 @@ services:
       - ai-voice
     networks:
       - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 # ============================================================
 # 网络

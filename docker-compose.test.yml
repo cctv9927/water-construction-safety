@@ -1,0 +1,184 @@
+# ============================================================
+# 联调测试 docker-compose
+# ============================================================
+# 用法: docker-compose -f docker-compose.test.yml up
+# ============================================================
+
+version: "3.9"
+
+# 继承基础服务
+extends:
+  file: docker-compose.yml
+  service: redis
+
+services:
+  
+  # ───────────────────────────────────────────────
+  # 测试用例：传感器数据上报测试
+  # ───────────────────────────────────────────────
+  test-sensor-collector:
+    build: ./sensor-collector
+    container_name: water-safety-test-sensor
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - COORDINATOR_URL=http://ai-coordinator:8084
+      - TB_TOKEN=test-token
+      - LOG_LEVEL=DEBUG
+    networks:
+      - water-safety-net
+    profiles:
+      - test
+    command: python -c "
+      import asyncio, httpx, json, random, time
+      async def test_sensor_data():
+          print('🧪 测试传感器数据上报...')
+          async with httpx.AsyncClient() as client:
+              # 模拟传感器数据
+              data = {
+                  'sensor_id': 'temp-001',
+                  'type': 'temperature',
+                  'value': round(random.uniform(20, 35), 2),
+                  'unit': 'celsius',
+                  'timestamp': time.time()
+              }
+              resp = await client.post(
+                  'http://sensor-collector:8085/api/report',
+                  json=data,
+                  timeout=5.0
+              )
+              print(f'✅ 传感器数据上报: {resp.status_code}')
+      asyncio.run(test_sensor_data())
+      "
+
+  # ───────────────────────────────────────────────
+  # 测试用例：AI Vision 检测测试
+  # ───────────────────────────────────────────────
+  test-ai-vision:
+    build: ./ai-vision
+    container_name: water-safety-test-vision
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - COORDINATOR_URL=http://ai-coordinator:8084
+      - LOG_LEVEL=DEBUG
+    networks:
+      - water-safety-net
+    profiles:
+      - test
+    command: python -c "
+      import asyncio, httpx, base64, json
+      from PIL import Image
+      from io import BytesIO
+
+      async def test_vision():
+          print('🧪 测试 AI Vision 检测...')
+          # 创建一个简单的测试图片（红色方块）
+          img = Image.new('RGB', (100, 100), color='red')
+          buffer = BytesIO()
+          img.save(buffer, format='JPEG')
+          img_b64 = base64.b64encode(buffer.getvalue()).decode()
+          
+          async with httpx.AsyncClient() as client:
+              resp = await client.post(
+                  'http://ai-vision:8082/api/detect',
+                  json={'image': img_b64, 'type': 'image'},
+                  timeout=30.0
+              )
+              print(f'✅ AI Vision 检测: {resp.status_code}')
+
+      asyncio.run(test_vision())
+      "
+
+  # ───────────────────────────────────────────────
+  # 测试用例：后端 API 健康检查
+  # ───────────────────────────────────────────────
+  test-backend:
+    build: ./backend
+    container_name: water-safety-test-backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://thingsboard:thingsboard@thingsboard-db:5432/water_safety
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=test-secret-key
+      - LOG_LEVEL=DEBUG
+    networks:
+      - water-safety-net
+    profiles:
+      - test
+    command: python -c "
+      import asyncio, httpx
+
+      async def test_backend():
+          print('🧪 测试 Backend API...')
+          async with httpx.AsyncClient() as client:
+              # 健康检查
+              resp = await client.get('http://backend:8000/health', timeout=5.0)
+              print(f'✅ 健康检查: {resp.status_code} - {resp.json()}')
+              
+              # 登录测试
+              resp = await client.post(
+                  'http://backend:8000/api/auth/login',
+                  json={'username': 'admin', 'password': 'admin123'},
+                  timeout=5.0
+              )
+              print(f'✅ 登录接口: {resp.status_code}')
+
+      asyncio.run(test_backend())
+      "
+
+  # ───────────────────────────────────────────────
+  # 测试用例：端到端告警流程
+  # ───────────────────────────────────────────────
+  test-e2e-alert:
+    container_name: water-safety-test-e2e
+    image: curlimages/curl:latest
+    depends_on:
+      - backend
+      - ai-coordinator
+    networks:
+      - water-safety-net
+    profiles:
+      - test
+    command: sh -c "
+      echo '🧪 测试端到端告警流程...'
+      sleep 5  # 等待服务启动
+      
+      # 1. 获取 Token
+      echo '1️⃣ 获取认证 Token...'
+      TOKEN=$$(curl -s -X POST http://backend:8000/api/auth/login \
+        -H 'Content-Type: application/json' \
+        -d '{\"username\":\"admin\",\"password\":\"admin123\"}' | jq -r '.access_token')
+      echo \"✅ Token: $${TOKEN:0:20}...\"
+      
+      # 2. 创建告警
+      echo '2️⃣ 创建告警...'
+      curl -s -X POST http://backend:8000/api/alerts \
+        -H \"Authorization: Bearer $$TOKEN\" \
+        -H 'Content-Type: application/json' \
+        -d '{
+          \"title\": \"测试告警\",
+          \"level\": \"P1\",
+          \"description\": \"端到端测试告警\",
+          \"location\": \"1号工地\"
+        }' | jq .
+      echo '✅ 告警创建完成'
+      
+      # 3. 查询告警列表
+      echo '3️⃣ 查询告警列表...'
+      curl -s http://backend:8000/api/alerts \
+        -H \"Authorization: Bearer $$TOKEN\" | jq '.total'
+      echo '✅ 测试完成'
+      "
+    profiles:
+      - test
+
+networks:
+  water-safety-net:
+    name: water-safety-net
+    external: true
