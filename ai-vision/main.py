@@ -1,7 +1,7 @@
 """
 AI Vision Module - YOLOv8 ONNX 推理服务
 FastAPI 图像识别服务，端口 8082
-支持静态图片检测 + RTSP 视频流实时检测
+支持静态图片检测（URL/Base64/文件上传）+ RTSP 视频流实时检测
 """
 import os
 import time
@@ -11,14 +11,14 @@ import json
 import asyncio
 from pathlib import Path
 from typing import Optional, List
+from uuid import uuid4
 
-import cv2
 import numpy as np
 import httpx
 from PIL import Image
 from io import BytesIO
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -52,7 +52,7 @@ stream_manager: Optional[RTSPStreamManager] = None
 # ─── FastAPI 应用 ────────────────────────────────────────
 app = FastAPI(
     title="Water-Safety AI Vision",
-    version="1.1.0",
+    version="1.3.0",
     description="水利建设工地图像识别服务 - YOLOv8 ONNX 推理 + RTSP 视频流检测",
 )
 
@@ -120,6 +120,104 @@ async def _report_to_coordinator(detection_result: DetectionResult):
         logger.warning(f"上报 Coordinator 失败: {e}")
 
 
+def _build_detection_response(img: np.ndarray, results: list, elapsed_ms: float):
+    """构建检测响应数据（URL/Base64/文件上传共用）"""
+    from schemas import Detection, BBox
+    detections_out = [
+        Detection(
+            class_id=r["class_id"],
+            class_name=r["class_name"],
+            confidence=round(float(r["confidence"]), 4),
+            bbox=BBox(
+                x1=int(r["bbox"][0]), y1=int(r["bbox"][1]),
+                x2=int(r["bbox"][2]), y2=int(r["bbox"][3]),
+            ),
+        )
+        for r in results
+    ]
+    return DetectResponse(
+        code=0, message="success",
+        data={
+            "width": int(img.shape[1]),
+            "height": int(img.shape[0]),
+            "detections": detections_out,
+            "count": len(detections_out),
+            "inference_time_ms": round(elapsed_ms, 2),
+        },
+    )
+
+
+# ─── 文件上传图片检测 API ────────────────────────────────
+
+@app.post("/detect/upload")
+async def detect_upload(
+    file: UploadFile = File(...),
+    confidence: float = 0.5,
+    max_detections: int = 100,
+):
+    """图片目标检测（文件上传 multipart/form-data），返回 JSON 检测结果"""
+    global model
+    if model is None:
+        raise HTTPException(status_code=503, detail="模型未加载")
+
+    # 保存上传文件到临时目录
+    os.makedirs("/tmp/ai-vision-uploads", exist_ok=True)
+    suffix = Path(file.filename).suffix if file.filename else ".jpg"
+    filepath = f"/tmp/ai-vision-uploads/{uuid4().hex}{suffix}"
+
+    try:
+        content = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        logger.error(f"文件保存失败: {e}")
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+
+    try:
+        img = Image.open(filepath).convert("RGB")
+        img_array = np.array(img)
+
+        start = time.perf_counter()
+        results = model.detect(
+            img_array,
+            conf_threshold=confidence,
+            max_detections=max_detections,
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "width": int(img_array.shape[1]),
+                "height": int(img_array.shape[0]),
+                "filename": file.filename,
+                "detections": [
+                    {
+                        "class_id": r["class_id"],
+                        "class_name": r["class_name"],
+                        "confidence": round(float(r["confidence"]), 4),
+                        "bbox": {
+                            "x1": int(r["bbox"][0]),
+                            "y1": int(r["bbox"][1]),
+                            "x2": int(r["bbox"][2]),
+                            "y2": int(r["bbox"][3]),
+                        },
+                    }
+                    for r in results
+                ],
+                "count": len(results),
+                "inference_time_ms": round(elapsed_ms, 2),
+            },
+        }
+    except Exception as e:
+        logger.error(f"推理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"推理失败: {str(e)}")
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+
 # ─── 静态图片检测 API ────────────────────────────────────
 
 @app.post("/detect", response_model=DetectResponse)
@@ -154,31 +252,7 @@ async def detect(request: DetectRequest):
         raise HTTPException(status_code=500, detail=f"推理失败: {str(e)}")
 
     elapsed_ms = (time.perf_counter() - start) * 1000
-
-    from schemas import Detection, BBox
-    detections_out = [
-        Detection(
-            class_id=r["class_id"],
-            class_name=r["class_name"],
-            confidence=round(float(r["confidence"]), 4),
-            bbox=BBox(
-                x1=int(r["bbox"][0]), y1=int(r["bbox"][1]),
-                x2=int(r["bbox"][2]), y2=int(r["bbox"][3]),
-            ),
-        )
-        for r in results
-    ]
-
-    return DetectResponse(
-        code=0, message="success",
-        data={
-            "width": int(img.shape[1]),
-            "height": int(img.shape[0]),
-            "detections": detections_out,
-            "count": len(detections_out),
-            "inference_time_ms": round(elapsed_ms, 2),
-        },
-    )
+    return _build_detection_response(img, results, elapsed_ms)
 
 
 # ─── RTSP 视频流管理 API ─────────────────────────────────
@@ -200,7 +274,6 @@ async def rtsp_add_camera(request: RTSPCameraConfig):
 
     stream_manager.add_stream(config)
 
-    # 立即启动
     if request.enabled:
         stream_manager.start_stream(request.camera_id)
 
