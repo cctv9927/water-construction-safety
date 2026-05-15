@@ -1,0 +1,26 @@
+{
+  "name": "drone-integration",
+  "version": "1.0.0",
+  "description": "无人机集成模块 - DJI SDK 集成与视频流转发",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "dev:simulator": "ts-node src/index.ts --simulator",
+    "test": "jest"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2",
+    "ts-node": "^10.9.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

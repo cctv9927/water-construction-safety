@@ -1,0 +1,14 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+redis==5.0.4
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+Pillow==10.3.0
+httpx==0.27.0
+pydantic==2.7.1
+python-multipart==0.0.9
+python-json-logger==2.0.7
+# ByteTrack (目标追踪)
+# pip install ByteTrack -m torch  # GPU版本
+motmetrics==1.4.0
+tqdm==4.66.4

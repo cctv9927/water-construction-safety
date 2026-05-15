@@ -1,0 +1,24 @@
+mqtt:
+  broker: "mqtt://localhost:1883"
+  client_id: "sensor-collector-01"
+  topics:
+    - "site/+/temperature"
+    - "site/+/pressure"
+    - "site/+/vibration"
+    - "site/+/displacement"
+    - "site/+/flow"
+    - "site/+/wind_speed"
+    - "site/+/rainfall"
+  qos: 1
+  keepalive: 60
+  reconnect_delay: 5
+
+iot_hub:
+  base_url: "http://localhost:8080/api/v1/iot"
+  timeout: 10
+  retry: 3
+
+collector:
+  report_interval: 5
+  batch_size: 100
+  log_level: "INFO"

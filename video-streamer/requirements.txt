@@ -1,0 +1,21 @@
+# 视频流处理服务依赖
+
+# Web 服务
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==12.0
+
+# 数据处理
+numpy==1.26.4
+pillow==10.4.0
+
+# 视频流处理
+ffmpeg-python==0.2.0
+
+# 配置管理
+pyyaml==6.0.2
+pydantic==2.9.2
+
+# 测试
+pytest==8.3.3
+pytest-asyncio==0.24.0
