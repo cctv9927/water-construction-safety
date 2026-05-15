@@ -125,9 +125,13 @@ app = FastAPI(
 
 
 # ==================== CORS 配置 ====================
+# 生产环境：通过环境变量配置允许的域名，支持多域名逗号分隔
+# 示例：ALLOWED_ORIGINS=https://example.com,https://app.example.com
+_allow_origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应限制具体域名
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
