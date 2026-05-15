@@ -5,3 +5,4 @@ openai-whisper==20231117
 edge-tts==6.1.7
 httpx==0.26.0
 python-multipart==0.0.6
+ffmpeg-python>=0.2.0

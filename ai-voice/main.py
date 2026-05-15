@@ -4,8 +4,10 @@ FastAPI 主服务 - 语音处理模块
 """
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 import tempfile
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
@@ -325,6 +327,94 @@ async def list_voices():
     """列出可用音色"""
     tts = get_tts_engine()
     return {"voices": tts.list_voices()}
+
+
+# ============== Whisper 直接转写（无意图检测）====================
+
+
+class TranscribeResponse(BaseModel):
+    """Whisper 直接转写响应"""
+    text: Optional[str] = None
+    language: Optional[str] = None
+    segments: Optional[list] = None
+    duration: Optional[float] = None
+    status: str
+    message: Optional[str] = None
+
+
+@app.post("/transcribe", response_model=TranscribeResponse)
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    language: str = "zh",
+    task: str = "transcribe",
+):
+    """
+    Whisper 语音识别 - 直接转写接口
+
+    与 /recognize 的区别：不触发意图检测和告警，仅返回纯文本和分段信息。
+
+    Args:
+        file: 音频文件（支持 mp3/wav/m4a/ogg/flac）
+        language: 语言设置，zh=中文，en=英文，auto=自动检测
+        task: transcribe=转写，translate=翻译为英文
+    """
+    os.makedirs("/tmp/ai-voice-uploads", exist_ok=True)
+    suffix = os.path.splitext(file.filename or ".wav")[1] or ".wav"
+    filepath = f"/tmp/ai-voice-uploads/{uuid4().hex}{suffix}"
+
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    try:
+        recognizer = get_whisper_recognizer()
+
+        # 同步调用转写（WhisperRecognizer.recognize_file 本身是 async）
+        result = await recognizer.recognize_file(filepath)
+
+        # 格式化 segments
+        segments_out = []
+        for seg in result.get("segments", []):
+            segments_out.append({
+                "id": seg.get("id"),
+                "start": round(seg.get("start", 0), 2),
+                "end": round(seg.get("end", 0), 2),
+                "text": seg.get("text", "").strip(),
+            })
+
+        return TranscribeResponse(
+            text=result.get("text", "").strip(),
+            language=result.get("language", language),
+            segments=segments_out,
+            duration=round(result.get("duration", 0), 2),
+            status="ok",
+        )
+    except FileNotFoundError:
+        return TranscribeResponse(status="error", message="音频文件读取失败")
+    except Exception as e:
+        logger.error(f"Transcribe error: {e}")
+        return TranscribeResponse(status="error", message=f"识别失败: {str(e)}")
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+
+@app.get("/model-info")
+async def model_info():
+    """
+    查询 Whisper 模型加载状态
+
+    Returns:
+        loaded: 模型是否已加载
+        model: 当前模型名称
+        device: 推理设备
+    """
+    global _recognizer
+    return {
+        "loaded": _recognizer is not None,
+        "model": _recognizer.model_name if _recognizer else "base",
+        "device": _recognizer.device if _recognizer else "cpu",
+    }
 
 
 # ============== 启动服务 ==============
