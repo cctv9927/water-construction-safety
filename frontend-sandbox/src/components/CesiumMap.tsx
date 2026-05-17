@@ -23,15 +23,16 @@ export default function CesiumMap({ onModelClick }: CesiumMapProps) {
   useEffect(() => {
     if (!containerRef.current) return
 
-    let destroyed = false
-
     import('cesium').then(async (CesiumModule) => {
-      if (destroyed || !containerRef.current) return
-      const Cesium = CesiumModule
+      const Cesium = (CesiumModule as any).default || CesiumModule
 
-      // Cesium 1.141: 使用 baseLayer: false 禁用默认底图，手动添加
+      // 初始化 Viewer
       const viewer = new Cesium.Viewer(containerRef.current, {
-        baseLayer: false, // 禁用默认 imagery，后续手动添加
+        // @ts-ignore - Cesium type definitions don't match runtime API
+        imageryProvider: new Cesium.BingMapsImageryProvider({
+          url: 'https://dev.virtualearth.net',
+          key: 'YOUR_BING_MAPS_KEY'
+        }),
         baseLayerPicker: false,
         geocoder: false,
         timeline: false,
@@ -42,61 +43,62 @@ export default function CesiumMap({ onModelClick }: CesiumMapProps) {
         fullscreenButton: false,
         infoBox: false,
         selectionIndicator: false,
-      })
+        skyBox: false,
+        skyAtmosphere: false,
+      } as any)
 
-      if (destroyed) { viewer.destroy(); return }
-
-      // 手动添加 OpenStreetMap 底图
-      const osmImagery = new Cesium.OpenStreetMapImageryProvider({
-        url: 'https://tile.openstreetmap.org/'
-      })
-      viewer.imageryLayers.addImageryProvider(osmImagery)
-
-      // 加载地形（Cesium 1.141: CesiumTerrainProvider.fromIonAssetId 返回 Promise）
-      try {
-        const terrainProvider = await Cesium.CesiumTerrainProvider.fromIonAssetId(1)
-        viewer.terrainProvider = terrainProvider
-      } catch (err) {
-        console.warn('Terrain load failed, using ellipsoid:', err)
-      }
+      viewerRef.current = viewer
 
       // 深蓝色天空背景
-      viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0f1e')
+      try {
+        ;(viewer.scene as any).backgroundColor = Cesium.Color.fromCssColorString('#0a0f1e')
+      } catch {
+        // ignore if not supported
+      }
 
-      // 添加 OSM 建筑物（异步）
+      // 添加地形
+      try {
+        const terrainProvider = await Cesium.CesiumTerrainProvider.fromIonAssetId(1)
+        ;(viewer.scene as any).terrainProvider = terrainProvider
+      } catch {
+        // ignore if terrain unavailable
+      }
+
+      // 添加 OSM 建筑物
       try {
         const osmBuildings = await Cesium.createOsmBuildingsAsync()
         viewer.scene.primitives.add(osmBuildings)
-      } catch (err) {
-        console.warn('OSM buildings load failed:', err)
+      } catch {
+        // ignore if OSM buildings unavailable
       }
 
       // 西藏视角 (拉萨为中心: N29.65, E91.1)
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(91.1, 29.65, 80000),
-        orientation: {
-          heading: Cesium.Math.toRadians(0),
-          pitch: Cesium.Math.toRadians(-40),
-          roll: 0
-        },
-        duration: 2
-      })
+      try {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(91.1, 29.65, 80000),
+          orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-40),
+            roll: 0
+          },
+          duration: 2
+        })
+      } catch {
+        // ignore if camera control unavailable
+      }
 
       // 加载沙盘模型
       loadSandboxModels(viewer, Cesium)
 
-      viewerRef.current = viewer
-      if (!destroyed) setMapReady(true)
+      setMapReady(true)
     }).catch(err => {
       console.error('Cesium init failed:', err)
-      if (!destroyed) setMapReady(true)
+      setMapReady(true)
     })
 
     return () => {
-      destroyed = true
       if (viewerRef.current) {
         viewerRef.current.destroy()
-        viewerRef.current = null
       }
     }
   }, [])
@@ -104,6 +106,7 @@ export default function CesiumMap({ onModelClick }: CesiumMapProps) {
   const loadSandboxModels = async (viewer: any, Cesium: any) => {
     try {
       const models = await sandboxApi.getModels() as any[]
+
       models.forEach((model) => {
         if (model.file_path && model.center_point) {
           const position = Cesium.Cartesian3.fromDegrees(
@@ -111,11 +114,18 @@ export default function CesiumMap({ onModelClick }: CesiumMapProps) {
             model.center_point.lat,
             model.center_point.alt || 0
           )
+
           viewer.entities.add({
             id: `model-${model.id}`,
             position,
-            model: { uri: model.file_path, scale: 1.0 },
-            properties: { name: model.name, modelId: model.id }
+            model: {
+              uri: model.file_path,
+              scale: 1.0
+            },
+            properties: {
+              name: model.name,
+              modelId: model.id
+            }
           })
         }
       })
@@ -125,27 +135,29 @@ export default function CesiumMap({ onModelClick }: CesiumMapProps) {
   }
 
   const flyToTibet = () => {
-    if (!viewerRef.current) return
     import('cesium').then((CesiumModule) => {
-      const Cesium = CesiumModule
-      viewerRef.current.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(91.1, 29.65, 80000),
-        orientation: {
-          heading: Cesium.Math.toRadians(0),
-          pitch: Cesium.Math.toRadians(-40),
-          roll: 0
-        }
-      })
+      const Cesium = (CesiumModule as any).default || CesiumModule
+      if (viewerRef.current) {
+        viewerRef.current.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(91.1, 29.65, 80000),
+          orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-40),
+            roll: 0
+          }
+        })
+      }
     })
   }
 
   const flyToOverview = () => {
-    if (!viewerRef.current) return
     import('cesium').then((CesiumModule) => {
-      const Cesium = CesiumModule
-      viewerRef.current.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(91.1, 29.65, 300000)
-      })
+      const Cesium = (CesiumModule as any).default || CesiumModule
+      if (viewerRef.current) {
+        viewerRef.current.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(91.1, 29.65, 300000)
+        })
+      }
     })
   }
 
