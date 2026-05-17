@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import Optional, List, Any
 from datetime import datetime
 from enum import Enum
@@ -60,15 +60,15 @@ class AlertStatusEnum(str, Enum):
 
 
 class AlertBase(BaseModel):
-    title: str = Field(..., max_length=200)
-    description: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=5000)
     level: AlertLevelEnum = AlertLevelEnum.P2
-    location: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    sensor_id: Optional[int] = None
-    evidence_images: List[str] = []
-    metadata: dict = {}
+    location: Optional[str] = Field(default=None, max_length=200)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90, description="纬度: -90~90")
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180, description="经度: -180~180")
+    sensor_id: Optional[int] = Field(default=None, gt=0)
+    evidence_images: List[str] = Field(default_factory=list, max_length=20)
+    metadata: dict = Field(default_factory=dict)
 
 
 class AlertCreate(AlertBase):
@@ -130,15 +130,24 @@ class SensorTypeEnum(str, Enum):
 
 
 class SensorBase(BaseModel):
-    name: str = Field(..., max_length=100)
+    name: str = Field(..., min_length=1, max_length=100)
     type: SensorTypeEnum
-    location: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    device_id: Optional[str] = None
-    unit: Optional[str] = None
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
+    location: Optional[str] = Field(default=None, max_length=200)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    device_id: Optional[str] = Field(default=None, max_length=100, pattern="^[A-Za-z0-9_-]+$")
+    unit: Optional[str] = Field(default=None, max_length=20)
+    min_value: Optional[float] = Field(default=None, ge=-1e9, le=1e9)
+    max_value: Optional[float] = Field(default=None, ge=-1e9, le=1e9)
+
+    @field_validator("max_value")
+    @classmethod
+    def validate_range(cls, v, info):
+        """确保 max_value >= min_value"""
+        min_val = info.data.get("min_value")
+        if v is not None and min_val is not None and v < min_val:
+            raise ValueError("max_value must be greater than or equal to min_value")
+        return v
 
 
 class SensorCreate(SensorBase):
@@ -157,8 +166,8 @@ class SensorResponse(SensorBase):
 
 class SensorDataPoint(BaseModel):
     timestamp: datetime
-    value: float
-    quality: str = "good"
+    value: float = Field(..., ge=-1e9, le=1e9)
+    quality: str = Field(default="good", pattern="^(good|bad|uncertain)$")
 
 
 class SensorDataResponse(BaseModel):

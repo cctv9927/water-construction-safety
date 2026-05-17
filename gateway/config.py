@@ -38,7 +38,8 @@ class ServiceConfig(BaseModel):
     port: int = Field(default=8000, description="监听端口")
     workers: int = Field(default=4, description="工作进程数")
     reload: bool = Field(default=False, description="开发模式热重载")
-    cors_origins: list[str] = Field(default=["*"], description="CORS 允许的源")
+    # CORS 默认为空（强制要求配置），生产环境禁止 "*"
+    cors_origins: list[str] = Field(default=[], description="CORS 允许的源（生产环境禁止通配符）")
 
 
 class BackendConfig(BaseModel):

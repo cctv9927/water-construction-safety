@@ -69,7 +69,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 
 class CORSMiddleware(BaseHTTPMiddleware):
-    """CORS 中间件"""
+    """CORS 中间件（安全加固版）"""
+
+    # 生产环境禁止的源
+    BLOCKED_ORIGINS = {"*", "null", "undefined"}
 
     def __init__(
         self,
@@ -79,25 +82,38 @@ class CORSMiddleware(BaseHTTPMiddleware):
         allow_headers: list[str] = None
     ):
         super().__init__(app)
-        self.allow_origins = allow_origins or ["*"]
-        self.allow_methods = allow_methods or ["*"]
+        # 过滤掉非法源
+        self.allow_origins = [
+            o for o in (allow_origins or []) if o not in self.BLOCKED_ORIGINS
+        ]
+        self.allow_methods = allow_methods or ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
         self.allow_headers = allow_headers or ["*"]
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         origin = request.headers.get("origin")
 
-        if origin and (origin in self.allow_origins or "*" in self.allow_origins):
+        # 生产环境必须配置 allow_origins 且不能包含 *
+        if origin and (
+            origin in self.allow_origins
+            or (origin.startswith("http://localhost") and not self.allow_origins)
+        ):
             response = await call_next(request)
 
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = ", ".join(
-                m.upper() for m in (self.allow_methods if self.allow_methods != ["*"] else ["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+                m.upper() for m in self.allow_methods
             )
             response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers)
             response.headers["Access-Control-Allow-Credentials"] = "true"
+            # 安全头
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-XSS-Protection"] = "1; mode=block"
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
             return response
 
+        # 没有匹配的 origin，拒绝跨域请求
         return await call_next(request)
 
 
@@ -142,10 +158,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # 添加限流头
-        response.headers["X-RateLimit-Limit"] = str(result.limit)
-        response.headers["X-RateLimit-Remaining"] = str(result.remaining)
-        response.headers["X-RateLimit-Reset"] = str(result.reset_at)
+        # 添加限流头（从 request.state 获取已计算的限流结果）
+        rate_result = getattr(request.state, "rate_limit", None)
+        if rate_result:
+            for key, value in self.limiter.build_headers(rate_result).items():
+                response.headers[key] = value
 
         return response
 
@@ -158,12 +175,12 @@ def setup_middleware(app: ASGIApp, limiter: Optional[RateLimiter] = None, **kwar
     # 日志
     app.add_middleware(LoggingMiddleware)
 
-    # CORS
+    # CORS（安全加固版）
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=kwargs.get("allow_origins", ["*"])
+        allow_origins=kwargs.get("allow_origins", [])
     )
 
-    # 限流
+    # 限流（全局）
     if limiter:
         app.add_middleware(RateLimitMiddleware, limiter=limiter)

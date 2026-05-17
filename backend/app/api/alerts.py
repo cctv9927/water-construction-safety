@@ -45,9 +45,15 @@ async def list_alerts(
     if sensor_id:
         query = query.filter(Alert.sensor_id == sensor_id)
     if search:
+        # 防 LIKE 注入：转义特殊字符
+        safe_search = (
+            search.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
         query = query.filter(
-            Alert.title.ilike(f"%{search}%") |
-            Alert.description.ilike(f"%{search}%")
+            Alert.title.ilike(f"%{safe_search}%") |
+            Alert.description.ilike(f"%{safe_search}%")
         )
     
     total = query.count()

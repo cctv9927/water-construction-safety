@@ -1,9 +1,16 @@
-"""Redis 限流模块"""
+"""Redis 限流模块（安全加固版）
+
+增强：
+- 全局限流：100请求/分钟（基于 IP）
+- 敏感接口独立限流（登录 10次/分钟）
+- Redis 滑动窗口算法
+- 限流响应头：X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+"""
 
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Optional, Dict
 from dataclasses import dataclass
 
 import redis.asyncio as redis
@@ -20,6 +27,27 @@ class RateLimitResult:
     limit: int
     remaining: int
     reset_at: int  # Unix timestamp
+    retry_after: int  # seconds
+
+
+class EndpointRateLimitConfig:
+    """端点级别限流配置"""
+
+    # 敏感端点的独立限流规则（覆盖全局）
+    ENDPOINT_LIMITS: Dict[str, tuple[int, int]] = {
+        # (limit, window_seconds)
+        "/auth/login": (10, 60),       # 登录：10次/分钟
+        "/auth/refresh": (20, 60),     # 刷新 token：20次/分钟
+        "/auth/logout": (30, 60),      # 登出：30次/分钟
+    }
+
+    @classmethod
+    def get_limit(cls, path: str) -> tuple[int, int]:
+        """获取端点的限流配置"""
+        for endpoint, (limit, window) in cls.ENDPOINT_LIMITS.items():
+            if path.startswith(endpoint):
+                return limit, window
+        return None, None  # 使用全局默认
 
 
 class RateLimiter:
@@ -57,12 +85,22 @@ class RateLimiter:
         """生成限流 key"""
         return f"ratelimit:{endpoint}:{identifier}"
 
+    def _build_headers(self, result: RateLimitResult) -> dict:
+        """构建限流响应头"""
+        return {
+            "X-RateLimit-Limit": str(result.limit),
+            "X-RateLimit-Remaining": str(result.remaining),
+            "X-RateLimit-Reset": str(result.reset_at),
+            "Retry-After": str(result.retry_after),
+        }
+
     async def check_rate_limit(
         self,
         identifier: str,
         endpoint: str = "default",
         limit: Optional[int] = None,
-        window: Optional[int] = None
+        window: Optional[int] = None,
+        for_login: bool = False,
     ) -> RateLimitResult:
         """检查限流
 
@@ -76,6 +114,13 @@ class RateLimiter:
                 remaining=-1,
                 reset_at=int(time.time()) + (window or self.config.default_window)
             )
+
+        # 优先使用端点级别的严格限制
+        if endpoint != "default":
+            ep_limit, ep_window = EndpointRateLimitConfig.get_limit(endpoint)
+            if ep_limit is not None:
+                limit = ep_limit
+                window = ep_window
 
         limit = limit or self.config.default_limit
         window = window or self.config.default_window
@@ -107,19 +152,22 @@ class RateLimiter:
                 # 计算重置时间
                 oldest = await self.redis.zrange(key, 0, 0, withscores=True)
                 reset_at = int(oldest[0][1] + window) if oldest else int(now + window)
+                retry_after = max(1, reset_at - int(now))
 
                 return RateLimitResult(
                     allowed=False,
                     limit=limit,
                     remaining=0,
-                    reset_at=reset_at
+                    reset_at=reset_at,
+                    retry_after=retry_after,
                 )
 
             return RateLimitResult(
                 allowed=True,
                 limit=limit,
                 remaining=limit - current_count - 1,
-                reset_at=int(now + window)
+                reset_at=int(now + window),
+                retry_after=0,
             )
 
         except Exception as e:
@@ -129,7 +177,8 @@ class RateLimiter:
                 allowed=True,
                 limit=limit,
                 remaining=limit,
-                reset_at=int(time.time() + window)
+                reset_at=int(time.time() + window),
+                retry_after=0,
             )
 
     async def check_burst_limit(
@@ -137,9 +186,13 @@ class RateLimiter:
         identifier: str,
         endpoint: str = "default"
     ) -> RateLimitResult:
-        """检查突发限流"""
+        """检查突发限流（10秒窗口）"""
         limit = int(self.config.default_limit * self.config.burst_multiplier)
-        return await self.check_rate_limit(identifier, endpoint, limit, 10)  # 10秒窗口
+        return await self.check_rate_limit(identifier, endpoint, limit, 10)
+
+    def build_headers(self, result: RateLimitResult) -> dict:
+        """构建限流响应头"""
+        return self._build_headers(result)
 
     async def reset_limit(self, identifier: str, endpoint: str = "default"):
         """重置限流"""

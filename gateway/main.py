@@ -1,4 +1,10 @@
-"""统一接入网关 - FastAPI 主入口"""
+"""统一接入网关 - FastAPI 主入口
+
+安全加固版：
+- 认证服务集成 Redis（token 黑名单、登录限流）
+- 审计日志记录
+- 敏感接口独立限流
+"""
 
 from __future__ import annotations
 
@@ -29,8 +35,9 @@ app = FastAPI(
 
 # 全局状态
 config: Optional[GatewayConfig] = None
-auth_service: Optional[AuthService] = None
+gateway_auth_service: Optional[AuthService] = None
 rate_limiter: Optional[RateLimiter] = None
+redis_client = None
 logger = get_logger()
 
 
@@ -68,33 +75,116 @@ class ProxyRequest(BaseModel):
 # ============ 认证接口 ============
 
 @app.post("/auth/login", response_model=TokenResponse)
-async def login(request: LoginRequest):
-    """用户登录"""
-    global auth_service
+async def login(request: LoginRequest, req: Request):
+    """用户登录（含登录限流、审计日志）"""
+    global gateway_auth_service, redis_client
 
-    # TODO: 实际应查询数据库验证用户
-    # 这里简化为示例
-    if request.username == "admin" and request.password == "admin123":
-        return auth_service.create_tokens(
-            user_id="user_001",
+    client_ip = req.client.host if req.client else "unknown"
+    user_agent = req.headers.get("user-agent", "unknown")
+
+    # 1. 检查账户锁定
+    lockout_msg = await gateway_auth_service.check_login_lockout(
+        request.username, client_ip
+    )
+    if lockout_msg:
+        gateway_auth_service.audit.log(
+            event_type="login_blocked_lockout",
             username=request.username,
-            roles=["admin"]
+            ip=client_ip,
+            result="blocked",
+            metadata={"user_agent": user_agent}
         )
-    elif request.username == "viewer" and request.password == "viewer123":
-        return auth_service.create_tokens(
-            user_id="user_002",
+        raise HTTPException(status_code=429, detail=lockout_msg)
+
+    # 2. 验证用户（示例，实际应查数据库）
+    valid_users = {
+        "admin": ("user_001", ["admin"]),
+        "viewer": ("user_002", ["viewer"]),
+    }
+
+    if request.username not in valid_users:
+        remaining = await gateway_auth_service.record_login_failure(
+            request.username, client_ip
+        )
+        gateway_auth_service.audit.log(
+            event_type="login_failed",
             username=request.username,
-            roles=["viewer"]
+            ip=client_ip,
+            result="failed",
+            metadata={"reason": "user_not_found", "remaining": remaining}
         )
-    else:
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        if remaining > 0:
+            raise HTTPException(
+                status_code=401,
+                detail=f"用户名或密码错误，剩余尝试次数: {remaining}"
+            )
+        else:
+            raise HTTPException(
+                status_code=429,
+                detail="账户已锁定，请在 15 分钟后重试"
+            )
+
+    user_id, roles = valid_users[request.username]
+    # 简化验证：实际应查数据库比对密码 hash
+    if request.password != ({"admin": "admin123", "viewer": "viewer123"}.get(request.username)):
+        remaining = await gateway_auth_service.record_login_failure(
+            request.username, client_ip
+        )
+        gateway_auth_service.audit.log(
+            event_type="login_failed",
+            username=request.username,
+            ip=client_ip,
+            result="failed",
+            metadata={"reason": "invalid_password", "remaining": remaining}
+        )
+        if remaining > 0:
+            raise HTTPException(
+                status_code=401,
+                detail=f"用户名或密码错误，剩余尝试次数: {remaining}"
+            )
+        else:
+            raise HTTPException(
+                status_code=429,
+                detail="账户已锁定，请在 15 分钟后重试"
+            )
+
+    # 3. 登录成功
+    await gateway_auth_service.record_login_success(request.username, client_ip)
+    gateway_auth_service.audit.log(
+        event_type="login_success",
+        username=request.username,
+        user_id=user_id,
+        ip=client_ip,
+        result="success",
+        metadata={"roles": roles, "user_agent": user_agent}
+    )
+
+    return gateway_auth_service.create_tokens(
+        user_id=user_id,
+        username=request.username,
+        roles=roles
+    )
 
 
 @app.post("/auth/refresh", response_model=TokenResponse)
 async def refresh_token(request: RefreshTokenRequest):
     """刷新令牌"""
-    global auth_service
-    return auth_service.refresh_access_token(request.refresh_token)
+    global gateway_auth_service
+    return await gateway_auth_service.refresh_access_token(request.refresh_token)
+
+
+@app.post("/auth/logout")
+async def logout(current_user: TokenPayload = Depends(get_current_user)):
+    """登出（撤销当前 token）"""
+    global gateway_auth_service
+    await gateway_auth_service.revoke_token(current_user.jti)
+    gateway_auth_service.audit.log(
+        event_type="logout",
+        user_id=current_user.sub,
+        username=current_user.username,
+        result="success"
+    )
+    return {"message": "已成功登出"}
 
 
 @app.get("/auth/me", response_model=TokenPayload)
@@ -257,11 +347,21 @@ async def startup_event():
     logger = get_logger(LogConfig(**config.log.model_dump()))
 
     # 初始化认证服务
-    auth_service = AuthService(config.jwt)
+    auth_service_cfg = config.jwt
+    gateway_auth_service = AuthService(auth_service_cfg)
+    if redis_client:
+        gateway_auth_service.set_redis(redis_client)
+    # 暴露到全局供依赖注入使用
+    import gateway.main as gm
+    gm.auth_service = gateway_auth_service
 
     # 初始化限流
     rate_limiter = RateLimiter(config.rate_limit)
     await rate_limiter.connect()
+
+    # 初始化 Redis（供认证服务复用）
+    if rate_limiter.redis:
+        redis_client = rate_limiter.redis
 
     # 设置中间件
     setup_middleware(app, rate_limiter, allow_origins=config.service.cors_origins)
@@ -276,12 +376,15 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """关闭事件"""
-    global rate_limiter
+    global rate_limiter, redis_client
 
     logger.info("网关正在关闭...")
 
     if rate_limiter:
         await rate_limiter.close()
+
+    if redis_client:
+        await redis_client.close()
 
     logger.info("网关已关闭")
 

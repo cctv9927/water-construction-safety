@@ -7,9 +7,10 @@ import asyncio
 from typing import List, Dict, Set
 from collections import defaultdict
 
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.responses import ORJSONResponse
 from sse_starlette.sse import EventSourceResponse
 import redis.asyncio as redis
 
@@ -26,7 +27,8 @@ from app.schemas.schemas import (
     TokenResponse, UserLogin, UserCreate, UserResponse,
     BaseResponse
 )
-from app.auth import get_current_user, create_access_token, verify_password, get_password_hash
+from app.auth import get_current_user, create_access_token, verify_password, get_password_hash, set_redis_client
+from app.audit import get_audit_logger
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import json
@@ -97,14 +99,17 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     print("✅ 数据库表已创建/验证")
     
-    # 连接 Redis
+    # 连接 Redis（供 auth 模块复用）
     try:
         redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
         await redis_client.ping()
+        # 设置到 auth 模块
+        set_redis_client(redis_client)
         print("✅ Redis 连接成功")
     except Exception as e:
         print(f"⚠️ Redis 连接失败: {e}")
         redis_client = None
+        set_redis_client(None)
     
     yield
     
@@ -125,17 +130,30 @@ app = FastAPI(
 
 
 # ==================== CORS 配置 ====================
-# 生产环境：通过环境变量配置允许的域名，支持多域名逗号分隔
+# 生产环境：通过环境变量配置允许的域名，禁止 "*"
 # 示例：ALLOWED_ORIGINS=https://example.com,https://app.example.com
-_allow_origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS else ["*"]
+_origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS else []
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allow_origins,
+    allow_origins=_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+
+# ==================== 安全响应头中间件 ====================
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """添加安全响应头"""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Content-Security-Policy 可根据实际情况配置
+    return response
 
 
 # ==================== 异常处理 ====================
