@@ -1,40 +1,78 @@
-rtsp:
-  timeout: 30
-  retry_interval: 5
-  max_retries: 3
-  buffer_size: 1  # 低延迟
+# 摄像头配置
+cameras:
+  - name: 工地入口
+    camera_id: CAM-001
+    rtsp_url: rtsp://camera-ip-1:554/stream
+    enabled: true
+    ai_detection: true
+    stream_quality: high
+    fps: 25
+    resolution: 1920x1080
+    
+  - name: 高边坡监控
+    camera_id: CAM-002
+    rtsp_url: rtsp://camera-ip-2:554/stream
+    enabled: true
+    ai_detection: true
+    stream_quality: high
+    fps: 25
+    resolution: 1920x1080
+    
+  - name: 材料堆放区
+    camera_id: CAM-003
+    rtsp_url: rtsp://camera-ip-3:554/stream
+    enabled: true
+    ai_detection: false
+    stream_quality: medium
+    fps: 15
+    
+  - name: 塔吊监控
+    camera_id: CAM-004
+    rtsp_url: rtsp://camera-ip-4:554/stream
+    enabled: true
+    ai_detection: true
+    ptz_control: true
+    presets:
+      - name: 全景
+        position: 0,0,0
+      - name: 特写
+        position: 180,45,10
 
-frame_capture:
-  output_dir: /app/frames
-  jpeg_quality: 85
-  png_compress: 6
-  max_storage_days: 7
+# 流媒体服务
+streaming:
+  server: easy-darwin
+  rtmp_port: 1935
+  http_port: 8080
+  hls_enabled: true
+  hls_path: /usr/local/minglong/workspace/hls
+  hls_segment_duration: 2
+  hls_list_size: 10
 
-diagnostics:
-  brightness_threshold: 20.0
-  occlusion_ratio: 0.8
-  check_interval: 5.0
-
-websocket:
-  host: "0.0.0.0"
-  port: 8081
-
-# 视频流来源配置
-streams:
-  # 格式: stream_id → RTSP URL
-  # 支持多路摄像头
-  []
-
-# EasyDarwin 流媒体服务器配置（可选）
-easy_darwin:
-  enabled: false
-  api_url: "http://localhost:8080"
-  stream_key_prefix: "water_safety_"
-
-# AI Vision 对接配置
-ai_vision:
+# AI 检测配置
+ai_detection:
   enabled: true
-  api_url: "http://ai-vision:8082"
-  # 截帧后自动推送给 ai-vision 检测
-  auto_detect: true
-  detect_interval: 2.0  # 每隔几秒送一帧去检测
+  model_path: /models/yolov8n.pt
+  confidence_threshold: 0.5
+  nms_threshold: 0.4
+  classes:
+    - person
+    - helmet
+    - vest
+    - vehicle
+    - machinery
+  alert_on:
+    - person_without_helmet
+    - person_without_vest
+    - unauthorized_vehicle
+
+# 录像配置
+recording:
+  enabled: true
+  storage_path: /录像
+  retention_days: 30
+  motion_detection: true
+  schedule:
+    - name: 全天录制
+      enabled: true
+      time_range: "00:00-24:00"
+      days: [0,1,2,3,4,5,6]

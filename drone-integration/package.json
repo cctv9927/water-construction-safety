@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "dev:simulator": "ts-node src/index.ts --simulator",
+    "dev:inspection": "ts-node src/simulator.ts --simulator --inspection",
     "test": "jest"
   },
   "dependencies": {

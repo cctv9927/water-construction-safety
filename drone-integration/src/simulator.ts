@@ -388,7 +388,172 @@ export class DroneSimulator extends EventEmitter {
   }
 }
 
-// 主函数
+// 航点航拍任务类型
+export interface InspectionWaypoint extends Waypoint {
+  id: string;
+  inspectionType: 'photo' | 'video' | 'thermal' | 'LiDAR';
+  photoCount: number;
+  hoverDuration: number; // 秒
+  gimbalAngle: { pitch: number; roll: number; yaw: number };
+}
+
+// 巡检任务类型
+export interface InspectionMission {
+  missionId: string;
+  name: string;
+  waypoints: InspectionWaypoint[];
+  totalDistance: number; // km
+  estimatedDuration: number; // minutes
+  startTime: number;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+}
+
+// 视频流传输出类型
+export interface VideoStreamConfig {
+  enabled: boolean;
+  codec: 'h264' | 'h265' | 'mjpeg';
+  bitrate: number; // kbps
+  resolution: { width: number; height: number };
+  fps: number;
+  keyframeInterval: number; // seconds
+}
+
+// 模拟巡检区域定义
+const INSPECTION_ZONES = [
+  {
+    zoneId: 'ZONE-A',
+    name: '水库大坝区域',
+    center: { latitude: 29.6501, longitude: 91.1001, altitude: 0 },
+    radius: 0.005, // 约500米
+    riskLevel: 'high',
+  },
+  {
+    zoneId: 'ZONE-B',
+    name: '高边坡监测区',
+    center: { latitude: 29.6503, longitude: 91.1003, altitude: 0 },
+    radius: 0.003, // 约300米
+    riskLevel: 'critical',
+  },
+  {
+    zoneId: 'ZONE-C',
+    name: '施工材料堆放区',
+    center: { latitude: 29.6505, longitude: 91.1005, altitude: 0 },
+    radius: 0.002,
+    riskLevel: 'medium',
+  },
+  {
+    zoneId: 'ZONE-D',
+    name: '人员活动区域',
+    center: { latitude: 29.6507, longitude: 91.1007, altitude: 0 },
+    radius: 0.002,
+    riskLevel: 'medium',
+  },
+];
+
+/**
+ * 生成巡检航点数据
+ */
+function generateInspectionWaypoints(missionId: string): InspectionWaypoint[] {
+  const waypoints: InspectionWaypoint[] = [];
+  const zone = INSPECTION_ZONES[Math.floor(Math.random() * INSPECTION_ZONES.length)];
+  
+  // 生成5-10个航点
+  const waypointCount = Math.floor(Math.random() * 6) + 5;
+  
+  for (let i = 0; i < waypointCount; i++) {
+    const angle = (i / waypointCount) * 2 * Math.PI;
+    const distance = zone.radius * (0.5 + Math.random() * 0.5);
+    
+    waypoints.push({
+      id: `WP-${missionId}-${i + 1}`,
+      position: {
+        latitude: zone.center.latitude + Math.cos(angle) * distance,
+        longitude: zone.center.longitude + Math.sin(angle) * distance,
+        altitude: 30 + Math.random() * 70, // 30-100米
+      },
+      heading: Math.floor(Math.random() * 360),
+      action: 'inspection',
+      stayTime: 5 + Math.floor(Math.random() * 10),
+      inspectionType: ['photo', 'video', 'thermal'][Math.floor(Math.random() * 3)] as any,
+      photoCount: Math.floor(Math.random() * 10) + 1,
+      hoverDuration: 5 + Math.floor(Math.random() * 15),
+      gimbalAngle: {
+        pitch: -30 - Math.floor(Math.random() * 30),
+        roll: Math.floor(Math.random() * 10) - 5,
+        yaw: Math.floor(Math.random() * 360),
+      },
+    });
+  }
+  
+  return waypoints;
+}
+
+/**
+ * 创建模拟巡检任务
+ */
+function createMockInspectionMission(): InspectionMission {
+  const missionId = `MISSION-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+  const waypoints = generateInspectionWaypoints(missionId);
+  
+  return {
+    missionId,
+    name: `日常巡检任务-${new Date().toLocaleDateString()}`,
+    waypoints,
+    totalDistance: Math.round(Math.random() * 5 * 10) / 10,
+    estimatedDuration: waypoints.length * 3,
+    startTime: Date.now(),
+    status: 'pending',
+  };
+}
+
+/**
+ * 生成视频流传配置
+ */
+function generateVideoStreamConfig(): VideoStreamConfig {
+  return {
+    enabled: true,
+    codec: 'h264',
+    bitrate: 2000 + Math.floor(Math.random() * 3000),
+    resolution: { width: 1920, height: 1080 },
+    fps: 25,
+    keyframeInterval: 2,
+  };
+}
+
+/**
+ * 模拟视频流帧数据
+ */
+function generateVideoFrameData(): any {
+  return {
+    frameId: Math.floor(Math.random() * 1000000),
+    timestamp: Date.now(),
+    sequenceNumber: Math.floor(Math.random() * 10000),
+    size: 50000 + Math.floor(Math.random() * 100000), // bytes
+    keyframe: Math.random() > 0.9,
+    metadata: {
+      encoding: 'h264',
+      profile: 'High',
+      level: '4.1',
+      resolution: '1920x1080',
+      fps: 25,
+    },
+  };
+}
+
+/**
+ * 模拟航点飞行状态
+ */
+function generateWaypointFlightData(waypoint: InspectionWaypoint, progress: number): any {
+  return {
+    waypointId: waypoint.id,
+    progress: Math.min(100, progress),
+    distanceToWaypoint: Math.max(0, 100 - progress) * 0.5, // 米
+    estimatedArrival: Date.now() + (100 - progress) * 100,
+    gimbalAngle: waypoint.gimbalAngle,
+    zoomLevel: 1 + Math.floor(Math.random() * 3),
+    focusDistance: 10 + Math.floor(Math.random() * 90),
+  };
+}
 async function main() {
   const simulator = new DroneSimulator({
     droneId: process.argv.includes('--simulator') ? 'SIM_001' : 'DRONE_001',
@@ -408,12 +573,106 @@ async function main() {
 
   await simulator.start();
 
-  console.log('[Simulator] 等待命令...');
-  console.log('[Simulator] 可用命令: takeoff, land, go_to, set_waypoints, start_mission');
+  // 检查是否为模拟巡检模式
+  const inspectionMode = process.argv.includes('--inspection');
+  
+  if (inspectionMode) {
+    console.log('[Simulator] 启动模拟巡检模式...');
+    console.log('[Simulator] 模拟区域列表:');
+    INSPECTION_ZONES.forEach(zone => {
+      console.log(`  - ${zone.zoneId}: ${zone.name} (风险等级: ${zone.riskLevel})`);
+    });
+    console.log();
+    
+    // 启动无人机
+    await simulator.takeoff();
+    
+    // 创建模拟巡检任务
+    const mission = createMockInspectionMission();
+    console.log(`[Simulator] 创建巡检任务: ${mission.name}`);
+    console.log(`[Simulator] 任务ID: ${mission.missionId}`);
+    console.log(`[Simulator] 航点数量: ${mission.waypoints.length}`);
+    console.log(`[Simulator] 预计航程: ${mission.totalDistance} km`);
+    console.log(`[Simulator] 预计时长: ${mission.estimatedDuration} 分钟`);
+    console.log();
+    
+    // 模拟视频流传输出
+    const videoConfig = generateVideoStreamConfig();
+    console.log(`[Simulator] 视频流配置:`);
+    console.log(`  - 编码: ${videoConfig.codec}`);
+    console.log(`  - 码率: ${videoConfig.bitrate} kbps`);
+    console.log(`  - 分辨率: ${videoConfig.resolution.width}x${videoConfig.resolution.height}`);
+    console.log(`  - 帧率: ${videoConfig.fps} fps`);
+    console.log();
+    
+    // 设置航线
+    const waypoints = mission.waypoints.map(wp => ({
+      position: wp.position,
+      heading: wp.heading,
+      action: wp.action,
+      stayTime: wp.stayTime,
+    }));
+    simulator.setWaypoints(waypoints);
+    
+    // 开始航点飞行
+    simulator.on('waypoint_reached', (data: any) => {
+      console.log(`[Simulator] 到达航点 ${data.index + 1}/${mission.waypoints.length}`);
+      console.log(`  位置: ${data.waypoint.position.latitude.toFixed(6)}, ${data.waypoint.position.longitude.toFixed(6)}`);
+      console.log(`  高度: ${data.waypoint.position.altitude.toFixed(1)}m`);
+      console.log(`  检查类型: ${data.waypoint.inspectionType}`);
+      console.log(`  拍照数量: ${data.waypoint.photoCount}`);
+      
+      // 模拟在此航点采集数据
+      console.log('  采集数据中...');
+      console.log(`  ✓ 航拍照片: ${data.waypoint.photoCount} 张`);
+      console.log(`  ✓ 视频片段: ${data.waypoint.hoverDuration} 秒`);
+      console.log();
+    });
+    
+    // 开始视频流传输出模拟
+    const videoStreamInterval = setInterval(() => {
+      const frameData = generateVideoFrameData();
+      // 模拟视频帧数据输出（实际项目中会发送到WebSocket）
+      if (frameData.keyframe) {
+        console.log(`[VideoStream] 关键帧 ID=${frameData.frameId} 大小=${frameData.size} bytes`);
+      }
+    }, 1000 / videoConfig.fps);
+    
+    // 开始航点任务
+    await simulator.startWaypointMission();
+    
+    // 任务完成
+    setTimeout(async () => {
+      console.log('[Simulator] 巡检任务完成，准备返航...');
+      await simulator.land();
+      
+      // 汇总
+      console.log();
+      console.log('='.repeat(50));
+      console.log('巡检任务汇总');
+      console.log('='.repeat(50));
+      console.log(`任务ID: ${mission.missionId}`);
+      console.log(`完成任务: ${mission.waypoints.length} 个航点`);
+      console.log(`飞行时长: ${mission.estimatedDuration} 分钟`);
+      console.log(`采集照片: ${mission.waypoints.reduce((sum: number, wp: any) => sum + wp.photoCount, 0)} 张`);
+      console.log(`采集视频: ${mission.waypoints.reduce((sum: number, wp: any) => sum + wp.hoverDuration, 0)} 秒`);
+      console.log(`电池消耗: ${Math.round((100 - simulator.getState().batteryLevel) * 10) / 10}%`);
+      console.log('='.repeat(50));
+      
+      clearInterval(videoStreamInterval);
+      simulator.stop();
+      process.exit(0);
+    }, mission.waypoints.length * mission.estimatedDuration * 1000 / 2); // 加速模拟
+    
+  } else {
+    console.log('[Simulator] 等待命令...');
+    console.log('[Simulator] 可用命令: takeoff, land, go_to, set_waypoints, start_mission');
+    console.log('[Simulator] 巡检模式: --inspection');
+  }
 }
 
 if (require.main === module) {
   main().catch(console.error);
 }
 
-export { DroneSimulator, SimulatorConfig, DroneState, Waypoint, Coordinate };
+export { DroneSimulator, SimulatorConfig, DroneState, Waypoint, Coordinate, InspectionWaypoint, InspectionMission, VideoStreamConfig };
