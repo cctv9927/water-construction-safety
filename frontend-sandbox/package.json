@@ -1,7 +1,7 @@
 {
-  "name": "water-safety-sandbox",
+  "name": "quality-safety-platform",
   "version": "1.0.0",
-  "description": "水利工地安全监管 - 电子沙盘模块",
+  "description": "工程质量安全智慧管理平台 - 电子沙盘模块",
   "type": "module",
   "scripts": {
     "dev": "vite",

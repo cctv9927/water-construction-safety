@@ -23,7 +23,7 @@ export default function VideoPlayer({ cameraId, onCameraChange }: VideoPlayerPro
 
   const loadCameras = async () => {
     try {
-      const data = await sandboxApi.getCameras()
+      const data = await sandboxApi.getCameras() as any[]
       setCameras(data)
       if (data.length > 0 && !cameraId) {
         onCameraChange(data[0].camera_id)
@@ -35,7 +35,7 @@ export default function VideoPlayer({ cameraId, onCameraChange }: VideoPlayerPro
 
   const loadVideos = async (id: string) => {
     try {
-      const data = await sandboxApi.getVideos(id)
+      const data = await sandboxApi.getVideos(id) as any[]
       setVideos(data)
     } catch (error) {
       console.error('Failed to load videos:', error)

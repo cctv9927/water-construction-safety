@@ -26,7 +26,7 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>🏗️ 水利工地安全监管 - 电子沙盘</h1>
+        <h1>🏗️ 工程质量安全智慧管理平台</h1>
         <nav>
           <button onClick={() => setActiveView('map')} className={activeView === 'map' ? 'active' : ''}>
             3D地图

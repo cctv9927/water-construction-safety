@@ -1,9 +1,7 @@
-import { WebSocket } from 'ws'
-
 const WS_URL = `ws://${window.location.host}/ws/alerts`
 
 let ws: WebSocket | null = null
-let reconnectTimer: NodeJS.Timeout | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let messageHandler: ((data: any) => void) | null = null
 
 export function connectWebSocket(onMessage: (data: any) => void): WebSocket {
@@ -96,43 +94,43 @@ export async function apiRequest<T>(
 
 // 沙盘相关 API
 export const sandboxApi = {
-  getModels: () => apiRequest('/sandbox/models'),
-  getModel: (id: number) => apiRequest(`/sandbox/models/${id}`),
-  getVideos: (cameraId?: string) => 
-    apiRequest(`/sandbox/videos${cameraId ? `?camera_id=${cameraId}` : ''}`),
-  getVideo: (id: number) => apiRequest(`/sandbox/videos/${id}`),
-  getCameras: () => apiRequest('/sandbox/cameras'),
+  getModels: <T = any>() => apiRequest<T>('/sandbox/models'),
+  getModel: <T = any>(id: number) => apiRequest<T>(`/sandbox/models/${id}`),
+  getVideos: <T = any>(cameraId?: string) =>
+    apiRequest<T>(`/sandbox/videos${cameraId ? `?camera_id=${cameraId}` : ''}`),
+  getVideo: <T = any>(id: number) => apiRequest<T>(`/sandbox/videos/${id}`),
+  getCameras: <T = any>() => apiRequest<T>('/sandbox/cameras'),
 }
 
 // 传感器相关 API
 export const sensorApi = {
-  list: (type?: string) => 
-    apiRequest(`/sensors${type ? `?type=${type}` : ''}`),
-  get: (id: number) => apiRequest(`/sensors/${id}`),
-  getData: (id: number, params?: { start?: string; end?: string; limit?: number }) => {
+  list: <T = any>(type?: string) =>
+    apiRequest<T>(`/sensors${type ? `?type=${type}` : ''}`),
+  get: <T = any>(id: number) => apiRequest<T>(`/sensors/${id}`),
+  getData: <T = any>(id: number, params?: { start?: string; end?: string; limit?: number }) => {
     const searchParams = new URLSearchParams()
     if (params?.start) searchParams.append('start_time', params.start)
     if (params?.end) searchParams.append('end_time', params.end)
     if (params?.limit) searchParams.append('limit', String(params.limit))
-    return apiRequest(`/sensors/${id}/data?${searchParams.toString()}`)
+    return apiRequest<T>(`/sensors/${id}/data?${searchParams.toString()}`)
   },
 }
 
 // 视觉检测 API
 export const visionApi = {
-  detect: (imageData: string) => 
-    apiRequest('/vision/detect', {
+  detect: <T = any>(imageData: string) =>
+    apiRequest<T>('/vision/detect', {
       method: 'POST',
       body: { image_data: imageData }
     }),
-  detectFile: async (file: File) => {
+  detectFile: async <T = any>(file: File): Promise<T> => {
     const formData = new FormData()
     formData.append('file', file)
-    
+
     const response = await fetch(`${API_BASE}/vision/detect/file`, {
       method: 'POST',
       body: formData,
     })
-    return response.json()
+    return response.json() as Promise<T>
   },
 }
