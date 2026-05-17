@@ -40,3 +40,4 @@ logs/
 tmp/
 temp/
 *.tmp
+frontend-sandbox/node_modules/
