@@ -46,3 +46,16 @@ export const alertsApi = {
   close: (id: string) =>
     api.post(`/api/alerts/${id}/close`),
 };
+
+// 告警 API（别名，方便直接使用）
+export const alertApi = {
+  list: (params: any) => api.get('/alerts', { params }),
+  get: (id: string) => api.get(`/alerts/${id}`),
+  update: (id: string, data: any) => api.patch(`/alerts/${id}`, data),
+};
+
+// 工作流 API
+export const workflowApi = {
+  list: () => api.get('/workflows'),
+  get: (id: string) => api.get(`/workflows/${id}`),
+};

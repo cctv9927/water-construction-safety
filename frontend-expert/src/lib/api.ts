@@ -26,3 +26,14 @@ export const expertApi = {
   fillForm: (formType: string, partialData: Record<string, any>, description: string) =>
     api.post('/api/expert/forms/fill', { form_type: formType, partial_data: partialData, description }),
 };
+
+// 质量问答 API（知识库检索 + LLM 生成回答）
+export const qaApi = {
+  ask: (question: string) => api.post('/qa/ask', { question }),
+};
+
+// 表单生成 & 填报 API
+export const formApi = {
+  generate: (desc: string) => api.post('/form/generate', { description: desc }),
+  submit: (data: any) => api.post('/form/submit', data),
+};
