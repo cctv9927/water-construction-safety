@@ -41,3 +41,7 @@ tmp/
 temp/
 *.tmp
 frontend-sandbox/node_modules/
+-e frontend-expert/node_modules/
+frontend-expert/package-lock.json
+frontend-workflow/node_modules/
+frontend-workflow/package-lock.json
