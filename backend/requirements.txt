@@ -13,3 +13,8 @@ redis==5.0.1
 aioredis==2.0.1
 httpx==0.26.0
 python-dotenv==1.0.1
+# 知识库依赖
+pymilvus>=2.3.0
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
+PyMuPDF>=1.23.0

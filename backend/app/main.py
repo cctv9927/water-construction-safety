@@ -157,6 +157,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # ==================== API 路由导入 ====================
 from app.api import sensors, alerts, vision, sandbox, expert, auth, websocket as ws_router
+from app.knowledge.router import router as knowledge_router
 
 app.include_router(auth.router, prefix=f"{settings.API_PREFIX}/auth", tags=["认证"])
 app.include_router(sensors.router, prefix=f"{settings.API_PREFIX}/sensors", tags=["传感器"])
@@ -165,6 +166,7 @@ app.include_router(vision.router, prefix=f"{settings.API_PREFIX}/vision", tags=[
 app.include_router(sandbox.router, prefix=f"{settings.API_PREFIX}/sandbox", tags=["电子沙盘"])
 app.include_router(expert.router, prefix=f"{settings.API_PREFIX}/expert", tags=["专家系统"])
 app.include_router(ws_router.router, tags=["WebSocket"])
+app.include_router(knowledge_router, prefix=f"{settings.API_PREFIX}", tags=["知识库"])
 
 
 # ==================== 根路由 ====================
