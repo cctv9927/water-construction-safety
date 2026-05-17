@@ -226,6 +226,32 @@ services:
       retries: 3
 
   # ───────────────────────────────────────────────
+  # Drone Integration 无人机集成
+  # ───────────────────────────────────────────────
+  drone-integration:
+    build:
+      context: ./drone-integration
+      dockerfile: Dockerfile
+    container_name: water-safety-drone
+    restart: unless-stopped
+    ports:
+      - "8090:8090"       # 无人机控制 API
+    environment:
+      LOG_LEVEL: INFO
+      COORDINATOR_URL: http://ai-coordinator:8084
+    volumes:
+      - ./drone-integration/config.yaml:/app/config.yaml:ro
+    depends_on:
+      - ai-coordinator
+    networks:
+      - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ───────────────────────────────────────────────
   # Backend API 网关
   # ───────────────────────────────────────────────
   backend:
@@ -280,6 +306,35 @@ services:
       - water-safety-net
 
   # ───────────────────────────────────────────────
+  # Gateway 统一接入网关
+  # ───────────────────────────────────────────────
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: water-safety-gateway
+    restart: unless-stopped
+    ports:
+      - "8001:8001"       # Gateway 统一入口
+    environment:
+      LOG_LEVEL: INFO
+      BACKEND_URL: http://backend:8000
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    volumes:
+      - ./gateway/config.yaml:/app/config.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - water-safety-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ───────────────────────────────────────────────
   # Nginx 反向代理（统一入口）
   # ───────────────────────────────────────────────
   nginx:
@@ -298,6 +353,7 @@ services:
       - ai-coordinator
       - ai-vision
       - ai-voice
+      - gateway
     networks:
       - water-safety-net
     healthcheck:
